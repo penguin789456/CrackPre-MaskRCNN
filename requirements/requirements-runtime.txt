@@ -1,0 +1,35 @@
+# 部署端（只做推論）的完整依賴。純 pip，不需要 conda、不需要 C++ Build Tools。
+#
+#     python -m venv .venv
+#     .venv\Scripts\activate
+#     pip install -r requirements-runtime.txt
+#
+# 前提：output/ 裡已經有 export_slim_model.py 產生的 model.onnx 與
+# model_manifest.json。沒有的話 crack_engine 會退回 torchscript / detectron2。
+
+# --- 推論 ---
+onnxruntime==1.22.0        # 需要 NVIDIA GPU 就改成 onnxruntime-gpu
+numpy==2.2.5
+opencv-python==4.11.0.86
+pillow==11.2.1             # 前處理必需：resize 要用 PIL BILINEAR 才能對上 detectron2
+
+# 若走 torchscript 後端（model.ts）而非 onnx，改為額外安裝這兩個，
+# 且 torchvision 不可省略——匯出的圖裡有 torchvision::nms，少了會噴
+# "Unknown builtin op: torchvision::nms"。這條路約 2.5 GB，仍不需要
+# detectron2 與 C++ Build Tools。
+# torch==2.7.0
+# torchvision==0.22.0
+
+# --- 桌面介面 ---
+PySide6==6.8.1.1           # crackpre_app 的 GUI；只跑 CLI 腳本的話不需要
+
+# --- 通知 ---
+line-bot-sdk==3.17.0
+requests==2.32.3           # imgbb 上傳用；pyimgur 已移除（Imgur API 停用）
+# .env 由 settings.py 自己解析，不需要 python-dotenv
+
+# --- 影像來源（依實際用到的挑，不用全裝） ---
+djitellopy==2.5.0          # manual-control-pygame.py（Tello EDU）
+pygame==2.6.1              # manual-control-pygame.py
+pywin32==310               # WINDOWNCATCH.py（Windows 視窗擷取）
+# RTSP.py 不需要額外套件：走 opencv-python 內建的 FFmpeg

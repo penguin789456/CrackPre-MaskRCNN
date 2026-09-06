@@ -1,0 +1,32 @@
+# === 金鑰：絕對不要提交 ===
+.env
+.env.bak
+*.env.bak
+
+# === 模型權重與匯出產物（單檔 170MB+，超過 GitHub 100MB 上限）===
+models/*.pth
+models/*.ts
+models/*.onnx
+
+# === 影像資料與執行期產物 ===
+data/raw/
+docs_shots/
+*.log
+
+# === 第三方與二進位 ===
+third_party/detectron2/
+bin/ngrok.exe
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# === 編輯器 ===
+.vscode/
+.idea/

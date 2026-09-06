@@ -1,0 +1,7 @@
+:: 匯出端 / 完整開發環境。從專案根目錄執行。
+:: 部署端不需要這個——見 setUp-slim.txt。
+
+conda env create -n CrackPre -f requirements/ComplateENV.yaml
+call conda activate CrackPre
+pip install -e third_party/detectron2 --no-build-isolation
+pip install -r requirements/requirements-export.txt

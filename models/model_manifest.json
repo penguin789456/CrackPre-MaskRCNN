@@ -1,0 +1,17 @@
+{
+  "outputs": [
+    "pred_boxes",
+    "pred_classes",
+    "pred_masks",
+    "scores",
+    "image_size"
+  ],
+  "class_names": [
+    "diagonal_crack",
+    "horizontal_crack",
+    "vertical_crack"
+  ],
+  "min_size_test": 800,
+  "max_size_test": 1333,
+  "note": "boxes/masks 為 resize 後座標系，mask 為 ROI 尺寸；還原由 crack_engine 負責"
+}

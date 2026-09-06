@@ -1,0 +1,17 @@
+:: 部署端安裝（不需要 conda、不需要 C++ Build Tools、不需要 detectron2）
+:: 前提：models\ 內已有 model.onnx 與 model_manifest.json
+::（由匯出端跑一次 tools\export_slim_model.py 產生）
+:: 以下指令都從專案根目錄執行。
+
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements\requirements-runtime.txt
+
+:: 驗證（不需要模型權重）
+python tools\selftest.py
+
+:: 量測延遲
+python tools\bench_latency.py
+
+:: 啟動桌面應用
+python main.py

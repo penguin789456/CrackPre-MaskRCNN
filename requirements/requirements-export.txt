@@ -1,0 +1,14 @@
+# 只有「匯出模型」這一台機器需要的重量級依賴。
+# 跑過一次 export_slim_model.py 之後就不必再裝了。
+#
+#     conda env create -n CrackPreExport -f ComplateENV.yaml
+#     conda activate CrackPreExport
+#     pip install -e detectron2 --no-build-isolation
+#     pip install -r requirements-export.txt
+#     cd CrackPre && python export_slim_model.py --format both
+
+torch==2.7.0
+torchvision==0.22.0
+onnx==1.17.0
+onnxruntime==1.22.0        # 匯出後就地驗證用
+# detectron2 以 `pip install -e detectron2 --no-build-isolation` 安裝（需要 MSVC Build Tools）
