@@ -29,6 +29,7 @@ from pipeline import LatestFrameWorker
 from visualize import draw_detections
 
 failures = []
+skipped = []
 
 
 def check(name, cond, detail=""):
@@ -37,6 +38,16 @@ def check(name, cond, detail=""):
     else:
         print(f"  FAIL  {name}  {detail}")
         failures.append(name)
+
+
+def skip(name, reason):
+    """略過而非失敗。
+
+    LINE / ImgBB 金鑰是選用的——全新安裝還沒設定 .env 時，偵測與存檔照樣能用，
+    所以那些檢查不該讓整份驗證變成紅的。
+    """
+    print(f"  SKIP  {name}　（{reason}）")
+    skipped.append(name)
 
 
 def test_resize():
@@ -181,7 +192,18 @@ def test_settings():
     print("settings / .env 讀取")
     import settings
 
-    check("找到 .env", settings.ENV_PATH is not None and os.path.exists(settings.ENV_PATH),
+    if settings.ENV_PATH is None or not os.path.exists(settings.ENV_PATH):
+        # 全新安裝的正常狀態。LINE 上傳才需要金鑰，偵測本身不需要。
+        skip("整組 .env 檢查", "尚未建立 .env，見 README 步驟 4；不影響偵測功能")
+        # 沒有 .env 也該安全地回傳空值而不是爆炸
+        check("無 .env 時 load_channels() 回傳空 list",
+              settings.load_channels() == [], f"got {settings.load_channels()}")
+        check("無 .env 時 describe() 仍可執行", isinstance(settings.describe(), str))
+        check("無 .env 時 missing_required() 會列出缺項",
+              len(settings.missing_required()) > 0)
+        return
+
+    check("找到 .env", os.path.exists(settings.ENV_PATH),
           f"ENV_PATH={settings.ENV_PATH}")
     check("讀到 LINE token", bool(settings.LINE_CHANNEL_ACCESS_TOKEN))
     check("讀到 LINE channel secret", bool(settings.LINE_CHANNEL_SECRET))
@@ -338,7 +360,10 @@ def main():
     if failures:
         print(f"{len(failures)} 項失敗: {failures}")
         sys.exit(1)
-    print("全部通過。")
+    if skipped:
+        print(f"全部通過（{len(skipped)} 項略過：{'、'.join(skipped)}）。")
+    else:
+        print("全部通過。")
 
 
 if __name__ == "__main__":
