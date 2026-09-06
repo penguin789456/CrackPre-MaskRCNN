@@ -16,7 +16,7 @@
 
 | 缺什麼 | 檔案 | 怎麼拿 |
 |---|---|---|
-| 模型權重 | `models/model_final.pth` | 向專案持有者索取，或從你自己的訓練產出複製 |
+| 模型權重 | `models/model_final.pth` | [Google Drive](https://drive.google.com/file/d/1yq8iHWtnphvVG0s8zuP1mRz0EYuEUywJ/view?usp=sharing)（步驟 3-1） |
 | 推論用模型 | `models/model.ts` 或 `model.onnx` | 由權重匯出（步驟 3-2） |
 | detectron2 | `third_party/detectron2/` | 只有「要匯出模型」時才需要，步驟 3-2 會 clone |
 
@@ -87,22 +87,37 @@ pip install torch==2.7.0 torchvision==0.22.0
 
 ## 步驟 3：取得模型
 
-### 3-1　放進權重
+### 3-1　下載權重
 
-把 `model_final.pth` 放到 `models\`：
+從 Google Drive 取得 `model_final.pth`（約 169 MB）：
+
+**https://drive.google.com/file/d/1yq8iHWtnphvVG0s8zuP1mRz0EYuEUywJ/view?usp=sharing**
+
+下載後放到 `models\`：
 
 ```
 models\model_final.pth
 ```
 
-沒有這個檔就沒辦法偵測。這是訓練產物，不隨程式碼發布。
+也可以用 `gdown` 直接抓（Drive 對大檔會擋掉 `curl`／`wget` 的病毒掃描確認頁，
+`gdown` 會自動處理）：
+
+```bat
+pip install gdown
+gdown 1yq8iHWtnphvVG0s8zuP1mRz0EYuEUywJ -O models\model_final.pth
+```
+
+沒有這個檔就沒辦法偵測。
 
 ### 3-2　匯出成推論格式
 
-如果你拿到的已經是 `model.ts` / `model.onnx` + `model_manifest.json`，
-直接放進 `models\` 就好，**跳過這一小節**。
+Drive 上放的是 `.pth`（訓練權重），程式**不能直接用它推論**，要先匯出一次。
 
-否則要從 `.pth` 匯出一次，這一步需要完整環境：
+如果你已經拿到 `model.ts` / `model.onnx` + `model_manifest.json`（例如從別台
+匯出過的機器複製過來），直接放進 `models\` 就好，**跳過這一小節**，
+也不需要 detectron2。
+
+否則要從 `.pth` 匯出，這一步需要完整環境：
 
 ```bat
 :: 取得 detectron2（v0.6）
