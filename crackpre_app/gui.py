@@ -70,6 +70,8 @@ class MainWindow(QMainWindow):
         self._selected_paths = []    # 圖片模式選到的檔案
         self._processed = 0
         self._last_result = None     # 最近一次的 FrameResult，供「拍一張」使用
+        self._preview_only = False   # 目前是否為只預覽（不跑模型）
+        self._snap_jobs = []         # 保留單格分析的執行緒參考，避免被 GC
         self.flight_panel = None     # _build_body 才會建，先佔位避免存取順序問題
         self._tello = TelloController(self)
         self._tello.error.connect(
@@ -133,7 +135,15 @@ class MainWindow(QMainWindow):
         self.thr_label = QLabel()
         self._update_thr_label(self.threshold.value())
 
-        self.start_btn = QPushButton("開始")
+        # 只預覽：開攝影機但不跑模型。畫面更新率不再被推論綁死（CPU 上約
+        # 0.3 fps），飛行時才看得到即時影像。
+        self.preview_btn = QPushButton("只預覽")
+        self.preview_btn.setToolTip(
+            "只開攝影機、不跑辨識，畫面以來源原本的幀率顯示。\n"
+            "用來對焦、取景、操控無人機。此時按 P 會單獨分析那一格。")
+        self.preview_btn.clicked.connect(self._on_preview)
+
+        self.start_btn = QPushButton("開始辨識")
         self.start_btn.clicked.connect(self._on_start)
         self.stop_btn = QPushButton("停止")
         self.stop_btn.clicked.connect(self._on_stop)
@@ -154,6 +164,8 @@ class MainWindow(QMainWindow):
         self.controls.addWidget(QLabel("門檻:"))
         self.controls.addWidget(self.threshold)
         self.controls.addWidget(self.thr_label)
+        if self.mode != MODE_IMAGE:
+            self.controls.addWidget(self.preview_btn)
         self.controls.addWidget(self.start_btn)
         self.controls.addWidget(self.stop_btn)
         if self.mode != MODE_IMAGE:
@@ -448,7 +460,11 @@ class MainWindow(QMainWindow):
 
     # -- 開始／停止 -------------------------------------------------------
 
-    def _on_start(self) -> None:
+    def _on_preview(self) -> None:
+        """只開攝影機，不跑辨識。"""
+        self._on_start(preview_only=True)
+
+    def _on_start(self, checked=False, preview_only: bool = False) -> None:
         if self._thread is not None:
             return
         try:
@@ -458,6 +474,7 @@ class MainWindow(QMainWindow):
             return
 
         self._processed = 0
+        self._preview_only = preview_only
         image_mode = self.mode == MODE_IMAGE
         self._engine = DetectionEngine(
             save_dir=config.hits_dir(),
@@ -466,6 +483,7 @@ class MainWindow(QMainWindow):
             drop_stale=not image_mode,
             cooldown_s=0.0 if image_mode else 3.0,
             min_interval_s=0.0,
+            preview_only=preview_only,
         )
         self._worker = DetectionWorker(self._engine, backend)
         self._thread = QThread()
@@ -479,11 +497,12 @@ class MainWindow(QMainWindow):
 
         self._last_result = None
         self.start_btn.setEnabled(False)
+        self.preview_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         # 第一格處理完才啟用；在那之前沒有畫面可以拍
         self.snapshot_btn.setEnabled(False)
         self._set_source_enabled(False)
-        self.view.setText("模型載入中…")
+        self.view.setText("連線中…" if preview_only else "模型載入中…")
 
     def _set_source_enabled(self, on: bool) -> None:
         if self.mode == MODE_IMAGE:
@@ -508,9 +527,11 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._engine = None
         self.start_btn.setEnabled(True)
+        self.preview_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.stop_btn.setText("停止")
         self.snapshot_btn.setEnabled(False)   # 停止後沒有即時畫面可拍
+        self._preview_only = False
         self._set_source_enabled(True)
         self._update_flight_buttons()   # 偵測用的連線可能已經被釋放
         if self.mode == MODE_IMAGE:
@@ -530,6 +551,11 @@ class MainWindow(QMainWindow):
             self.snapshot_btn.setEnabled(True)
         self.view.setPixmap(_to_pixmap(fr.overlay).scaled(
             self.view.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+        if self._preview_only:
+            self.status.setText(
+                f"預覽中（未辨識）　第 {fr.index} 格　按 P 分析目前畫面")
+            return
 
         parts = [f"信心度 {fr.score:.3f}", f"{fr.count} 處",
                  f"{fr.latency_ms:.0f} ms"]
@@ -569,6 +595,12 @@ class MainWindow(QMainWindow):
         if fr is None:
             QMessageBox.information(self, "拍一張", "還沒有畫面，等第一格處理完再試。")
             return
+
+        if self._preview_only:
+            # 預覽畫面沒跑過模型，要現場分析那一格。推論要好幾秒，丟背景做。
+            self._analyze_one(fr)
+            return
+
         try:
             hit = self._engine.save_snapshot(fr.overlay, fr.score, fr.label)
         except Exception as exc:
@@ -578,6 +610,51 @@ class MainWindow(QMainWindow):
         self._on_hit(hit)
         self.status.setText(
             f"已擷取　信心度 {fr.score:.3f}　{fr.count} 處　-> {Path(hit.path).name}")
+
+    def _analyze_one(self, fr) -> None:
+        """預覽模式：對單一影格跑一次推論，完成後存進命中清單。"""
+        from .worker import SnapshotWorker
+
+        self.snapshot_btn.setEnabled(False)
+        self.snapshot_btn.setText("分析中…")
+        self.status.setText("分析目前畫面中…")
+
+        frame = fr.overlay.copy()     # 預覽模式的 overlay 就是原始影格
+        label = fr.label
+        thread = QThread(self)
+        task = SnapshotWorker(frame)
+        task.moveToThread(thread)
+        thread.started.connect(task.run)
+
+        def finish():
+            self.snapshot_btn.setText("拍一張 (P)")
+            self.snapshot_btn.setEnabled(self._thread is not None)
+            thread.quit()
+
+        def done(overlay, det):
+            try:
+                hit = self._engine.save_snapshot(overlay, det.best_score, label) \
+                    if self._engine is not None else None
+            except Exception as exc:
+                QMessageBox.warning(self, "拍一張失敗", f"{type(exc).__name__}: {exc}")
+                finish()
+                return
+            if hit is not None:
+                hit.fields["manual"] = True
+                self._on_hit(hit)
+                self.status.setText(
+                    f"已分析並存檔　信心度 {det.best_score:.3f}　{len(det)} 處"
+                    f"　-> {Path(hit.path).name}")
+            finish()
+
+        def failed(msg):
+            QMessageBox.warning(self, "分析失敗", msg)
+            finish()
+
+        task.done.connect(done)
+        task.failed.connect(failed)
+        thread.start()
+        self._snap_jobs.append((thread, task))
 
     # -- 命中清單操作（全部手動） ------------------------------------------
 

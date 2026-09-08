@@ -105,15 +105,81 @@ def _selftest() -> int:
 
     flight_ok = _selftest_flight(app, frames)
     snap_ok = _selftest_snapshot(app, frames)
+    preview_ok, preview_fps = _selftest_preview(app, frames)
 
-    ok = processed >= 1 and has_pickers and exact and flight_ok and snap_ok
+    ok = (processed >= 1 and has_pickers and exact and flight_ok
+          and snap_ok and preview_ok)
     print(f"selftest {'OK' if ok else 'FAIL'}: "
           f"連續模式處理 {processed} 幀、命中 {hits} 張；"
           f"圖片模式選擇器 {'有' if has_pickers else '無'}、"
           f"處理 {img_processed}/{len(paths)} 張{'（相符）' if exact else '（不符！）'}；"
           f"飛行操控 {'通過' if flight_ok else '失敗'}；"
-          f"拍一張 {'通過' if snap_ok else '失敗'}")
+          f"拍一張 {'通過' if snap_ok else '失敗'}；"
+          f"預覽 {'通過' if preview_ok else '失敗'}（{preview_fps:.0f} fps）")
     return 0 if ok else 5
+
+
+def _selftest_preview(app, frames):
+    """驗證「只預覽」真的把畫面更新率跟推論解耦。
+
+    這不是看有沒有按鈕，而是實際量測：預覽跑兩秒應該產生數十格，
+    而同樣時間跑辨識（CPU 上每格數秒）連一格都不一定跑得完。
+    """
+    import time
+
+    problems = []
+
+    win = MainWindow(mode=MODE_CONTINUOUS, demo_frames=frames)
+    win.show()
+    demo_idx = [i for i in range(win.source_box.count())
+                if win.source_box.itemData(i) == "demo"]
+    if not demo_idx:
+        return True, 0.0
+    win.source_box.setCurrentIndex(demo_idx[0])
+
+    win._on_preview()
+    if win.preview_btn.isEnabled() or win.start_btn.isEnabled():
+        problems.append("預覽中「只預覽」與「開始辨識」都該反灰")
+
+    window_s = 2.0
+    t0 = time.time()
+    while time.time() - t0 < window_s:
+        app.processEvents()
+        time.sleep(0.005)
+    n = win._processed
+    fps = n / window_s
+
+    if not win._preview_only:
+        problems.append("_preview_only 沒有被設起來")
+    # 推論在 CPU 上每格數秒；預覽若沒解耦，兩秒內不可能有幾十格
+    if n < 10:
+        problems.append(f"預覽 {window_s:.0f} 秒只有 {n} 格，看起來沒有跟推論解耦")
+    if win._last_result is not None and win._last_result.latency_ms != 0.0:
+        problems.append("預覽的影格不該有推論耗時")
+    if win._last_result is not None and win._last_result.score != 0.0:
+        problems.append("預覽的影格不該有信心度")
+
+    win._on_stop()
+    for _ in range(2000):
+        app.processEvents()
+        if win._thread is None:
+            break
+        time.sleep(0.02)
+    if not win.preview_btn.isEnabled() or not win.start_btn.isEnabled():
+        problems.append("停止後兩個按鈕都該恢復")
+    win.close()
+
+    # 圖片模式不該有「只預覽」
+    win2 = MainWindow(mode=MODE_IMAGE, demo_frames=frames)
+    win2.show()
+    app.processEvents()
+    if win2.preview_btn.isVisible():
+        problems.append("圖片模式不該顯示「只預覽」")
+    win2.close()
+
+    for p in problems:
+        print(f"  預覽問題: {p}")
+    return not problems, fps
 
 
 def _selftest_snapshot(app, frames) -> bool:

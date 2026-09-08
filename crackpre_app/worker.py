@@ -11,6 +11,38 @@ from .engine import DetectionEngine
 from .sources import CaptureBackend
 
 
+class SnapshotWorker(QObject):
+    """對「單一影格」跑一次推論。
+
+    預覽模式下按「拍一張」用的：畫面是原始影像（沒跑過模型），所以要現場分析
+    那一格。推論在 CPU 上要好幾秒，不能擋住 UI 執行緒，因此丟到背景。
+
+    直接用 crack_engine 的單例，它內部有鎖，就算偵測正在跑也不會衝突。
+    """
+
+    done = Signal(object, object)   # (overlay, Detections)
+    failed = Signal(str)
+
+    def __init__(self, frame) -> None:
+        super().__init__()
+        self._frame = frame
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from crack_engine import get_engine
+            from visualize import draw_detections
+
+            det = get_engine().infer(self._frame)
+            overlay = draw_detections(self._frame, det) if len(det) else self._frame
+            self.done.emit(overlay, det)
+        except Exception as exc:
+            import traceback
+
+            traceback.print_exc()
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
 class DetectionWorker(QObject):
     frame_ready = Signal(object)   # FrameResult
     hit_ready = Signal(object)     # HitRecord

@@ -114,11 +114,18 @@ class DetectionEngine:
         cooldown_s: float = 3.0,
         drop_stale: bool = True,
         min_interval_s: float = 0.0,
+        preview_only: bool = False,
+        preview_fps: float = 30.0,
     ) -> None:
         self.save_dir = Path(save_dir)
         self.cooldown_s = float(cooldown_s)
         self.drop_stale = bool(drop_stale)
         self.min_interval_s = float(min_interval_s)
+        #: 預覽模式：只讀影格顯示，完全不跑模型。
+        #: 畫面更新率本來會被推論綁死（CPU 上約 0.3 fps），那個速度沒辦法
+        #: 操控無人機——看到障礙物時早就撞上了。預覽把兩者解耦。
+        self.preview_only = bool(preview_only)
+        self.preview_fps = float(preview_fps)
         self._threshold = float(threshold)
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -148,16 +155,22 @@ class DetectionEngine:
         now: Callable[[], float] = time.monotonic,
     ) -> int:
         """跑到來源結束或 stop() 被呼叫，回傳命中數。"""
-        from crack_engine import get_engine
         from visualize import draw_detections
 
         self._stop.clear()
         self.dropped = 0
-        engine = get_engine()
+        # 預覽模式不載模型。這很重要：只是要看畫面時不該先等模型載入好幾秒。
+        engine = None
+        if not self.preview_only:
+            from crack_engine import get_engine
+
+            engine = get_engine()
 
         backend.start()
         reader = None
-        if self.drop_stale and backend.is_live:
+        if self.drop_stale and backend.is_live and not self.preview_only:
+            # 預覽模式直接讀，不丟幀——沒有慢速推論擋著，畫面本來就跟得上，
+            # 丟幀反而會讓畫面看起來一頓一頓的。
             reader = _LatestFrameReader(backend)
             reader.start()
 
@@ -178,6 +191,22 @@ class DetectionEngine:
                         break
                     read_at = time.perf_counter()
 
+                idx += 1
+                age_ms = (time.perf_counter() - read_at) * 1000.0
+
+                if self.preview_only:
+                    # Tello 的 get_frame_read().frame 是非阻塞的，不節流會空轉燒滿 CPU
+                    if self.preview_fps > 0:
+                        gap = (1.0 / self.preview_fps) - (now() - last_run)
+                        if gap > 0 and self._stop.wait(gap):
+                            break
+                    last_run = now()
+                    if on_frame is not None:
+                        on_frame(FrameResult(
+                            index=idx, score=0.0, count=0, overlay=frame,
+                            latency_ms=0.0, label=backend.label(idx), age_ms=age_ms))
+                    continue
+
                 # 連續模式下限制推論頻率，避免把 GPU/CPU 燒滿
                 if self.min_interval_s:
                     gap = self.min_interval_s - (now() - last_run)
@@ -186,8 +215,6 @@ class DetectionEngine:
                             break
                 last_run = now()
 
-                idx += 1
-                age_ms = (time.perf_counter() - read_at) * 1000.0
                 det = engine.infer(frame)
                 overlay = draw_detections(frame, det) if len(det) else frame
 
