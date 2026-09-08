@@ -215,12 +215,8 @@ class TelloController(QObject):
             field, value = mapping[key]
             setattr(self, field, value)
             return True
-        if key == Qt.Key_T:
-            self.takeoff()
-            return True
-        if key == Qt.Key_L:
-            self.land()
-            return True
+        # T / L 刻意不在這裡處理。起飛有前置條件（要先開影像串流）要檢查，
+        # 那個檢查在 GUI 層；若這裡也接 T，快速鍵就會繞過檢查直接起飛。
         return False
 
     def key_release(self, key) -> bool:

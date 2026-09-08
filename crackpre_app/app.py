@@ -35,6 +35,45 @@ def _demo_frames() -> list:
     return frames
 
 
+_MSGBOX_SAVED = {}
+
+
+def _patch_msgbox(sink: list) -> None:
+    """把 QMessageBox 的彈窗攔下來記進 sink，測試才不會卡在對話框。"""
+    from PySide6.QtWidgets import QMessageBox
+
+    for name in ("warning", "information", "critical"):
+        _MSGBOX_SAVED[name] = getattr(QMessageBox, name)
+        setattr(QMessageBox, name,
+                staticmethod(lambda *a, _s=sink, **k: _s.append(" ".join(
+                    str(x) for x in a if isinstance(x, str)))))
+
+
+def _unpatch_msgbox() -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    for name, fn in _MSGBOX_SAVED.items():
+        setattr(QMessageBox, name, fn)
+    _MSGBOX_SAVED.clear()
+
+
+def _controller_handled_keys(ctl) -> set:
+    """TelloController.key_press 自己會處理的按鍵。"""
+    from PySide6.QtCore import Qt
+
+    handled = set()
+    saved = ctl._tello
+    ctl._tello = object()
+    try:
+        for key in (Qt.Key_T, Qt.Key_L, Qt.Key_Up):
+            if ctl.key_press(key):
+                handled.add(key)
+            ctl.key_release(key)
+    finally:
+        ctl._tello = saved
+    return handled
+
+
 def _select_run_mode(win, preview: bool) -> None:
     """在行為下拉裡明確選「只預覽」或「開始辨識」。
 
@@ -311,11 +350,37 @@ def _selftest_flight(app, frames) -> bool:
         problems.append("飛行面板不該再有獨立的「連線」鈕")
     if not hasattr(win, "disconnect_btn"):
         problems.append("飛行面板缺少「中斷連線」")
-    # 起飛＝連線＋影像，所以未連線時它也要可按（按下去會自己先連）
+    # 起飛鈕可按（才顯示得出提示訊息），但沒開影像時按下去必須擋掉
     if not win.takeoff_btn.isEnabled():
-        problems.append("未連線時「起飛」也該可按（它會自己先連線）")
+        problems.append("「起飛」該可按，才有機會顯示前置條件提示")
     if win.disconnect_btn.isEnabled():
         problems.append("未連線時「中斷連線」不該可按")
+
+    # 關鍵安全行為：沒有影像串流時，起飛必須被擋下，不能自作主張開串流或起飛
+    took_off = []
+    saved_takeoff = win._tello.takeoff
+    saved_start = win._on_start
+    started = []
+    win._tello.takeoff = lambda: took_off.append(True)
+    win._on_start = lambda *a, **k: started.append(True)
+    boxes = []
+    _patch_msgbox(boxes)
+    try:
+        win._on_takeoff()                      # 此時 _thread is None（沒開影像）
+    finally:
+        _unpatch_msgbox()
+        win._tello.takeoff = saved_takeoff
+        win._on_start = saved_start
+    if took_off:
+        problems.append("沒有影像串流時仍然起飛了")
+    if started:
+        problems.append("起飛不該自動開啟影像串流")
+    if not any("影像串流" in b for b in boxes):
+        problems.append(f"沒有顯示「尚未開啟影像串流」提示：{boxes}")
+
+    # T 快速鍵必須走同一條檢查，不能繞過
+    if Qt.Key_T in _controller_handled_keys(win._tello):
+        problems.append("T 仍由 TelloController 直接處理，會繞過起飛前置檢查")
     # 兩種停止的標示要能分辨
     if "影像" not in win.stop_btn.text():
         problems.append(f"停止鈕沒有標明是影像：{win.stop_btn.text()}")

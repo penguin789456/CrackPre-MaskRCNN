@@ -183,9 +183,9 @@ class MainWindow(QMainWindow):
         box = QGroupBox("飛行操控")
 
         # 這裡沒有「連線」鈕——控制列的「連線」已經會建立 Tello 連線並開影像，
-        # 再放一個只會讓人搞不清楚該按哪個。起飛本身也會自己確保連線。
+        # 再放一個只會讓人搞不清楚該按哪個。
         self.takeoff_btn = QPushButton("起飛 (T)")
-        self.takeoff_btn.setToolTip("若尚未連線／尚未開影像，會自動先連線並開啟畫面再起飛")
+        self.takeoff_btn.setToolTip("需先開啟影像串流才能起飛；未開啟時會提示並中斷操作")
         self.takeoff_btn.clicked.connect(self._on_takeoff)
         self.land_btn = QPushButton("降落 (L)")
         self.land_btn.clicked.connect(self._tello.land)
@@ -348,21 +348,25 @@ class MainWindow(QMainWindow):
             self._update_flight_buttons()
 
     def _on_takeoff(self) -> None:
-        """起飛＝連線 + 有影像 + takeoff。
+        """起飛。前置條件不符就擋下，不會自作主張幫忙補齊。
 
-        飛手按下起飛時，理應已經看得到畫面——不然是盲飛。所以這裡會把前置
-        條件補齊：沒連線就先連，沒開畫面就先開。
+        起飛是不可逆的實體動作，不該當成別的操作的副作用。飛手按下起飛時理應
+        已經看得到畫面——沒有畫面就是盲飛，這時應該停下來告訴他，而不是默默
+        幫他把串流打開然後照樣起飛。
         """
-        if not self._ensure_tello_connected():
+        if self._thread is None:
+            QMessageBox.warning(
+                self, "尚未開啟影像串流",
+                "起飛前請先開啟影像串流。\n\n"
+                "請在上方選「只預覽」後按「連線」，確認看得到畫面再起飛。\n"
+                "（辨識模式畫面約 0.3 fps，不適合操控。）")
             return
 
-        if self._thread is None:
-            # 還沒開影像。起飛一律用「只預覽」開，不用下拉選的辨識——
-            # 辨識模式畫面只有 0.3 fps，那個速度沒辦法操控無人機。
-            self._on_start(preview_only=True)
-            if self._preview_selected() is False:
-                self.status.setText(
-                    "起飛：已用「只預覽」開啟畫面（辨識模式畫面太慢，不適合操控）")
+        if not self._tello.is_connected:
+            QMessageBox.warning(
+                self, "尚未連線",
+                "尚未連上 Tello。請確認來源選的是「Tello EDU」並已按「連線」。")
+            return
 
         self._tello.takeoff()
 
@@ -425,6 +429,15 @@ class MainWindow(QMainWindow):
         # autoRepeat 會在按住時連續觸發，速度已經是持續值，重複設定沒意義
         if (self._flight_active() and not event.isAutoRepeat()
                 and event.key() in FLIGHT_KEYS):
+            # T / L 走跟按鈕同一條路，才不會讓快速鍵繞過起飛的前置檢查
+            if event.key() == Qt.Key_T:
+                self._on_takeoff()
+                event.accept()
+                return
+            if event.key() == Qt.Key_L:
+                self._tello.land()
+                event.accept()
+                return
             if self._tello.key_press(event.key()):
                 event.accept()
                 return
@@ -500,10 +513,12 @@ class MainWindow(QMainWindow):
 
         kind = self.source_box.currentData()
         if kind == "tello":
-            # 已經手動連線的話沿用同一個實例，不要再開一條連線搶 UDP 8889
-            if self._tello.is_connected:
-                return TelloBackend(tello=self._tello.tello)
-            return TelloBackend()
+            # 一律讓 TelloController 持有連線，backend 只借用。
+            # 若放任 backend 自己開一條，controller 就沒有連線可以下飛行指令，
+            # 起飛／降落會全部失效（而且兩邊會搶 UDP 8889）。
+            if not self._ensure_tello_connected():
+                raise RuntimeError("無法連上 Tello。")
+            return TelloBackend(tello=self._tello.tello)
         if kind == "rtsp":
             return RtspBackend(self.source_arg.text().strip())
         if kind == "video":
