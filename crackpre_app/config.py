@@ -111,7 +111,7 @@ def save_env(values: dict) -> Path:
     existing = read_env_file()
     existing.update({k: (v or "") for k, v in values.items()})
 
-    known = [k for k, _, _ in EDITABLE_KEYS]
+    known = [k for k, _, _ in EDITABLE_KEYS] + ["CRACK_BACKEND"]
     lines = ["# 由 CrackPre 設定對話框寫入。含金鑰，不要提交。", ""]
     for key in known:
         lines.append(f"{key}={existing.get(key, '')}")

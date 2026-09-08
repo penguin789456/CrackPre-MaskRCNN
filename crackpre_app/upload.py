@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 
 def upload_hit_to_line(path: str, message: str, channel: int = 1) -> str:
@@ -56,6 +56,7 @@ class UploadTask(QObject):
         super().__init__()
         self._args = (path, message, channel)
 
+    @Slot()
     def run(self) -> None:
         try:
             self.done.emit(upload_hit_to_line(*self._args))
@@ -64,7 +65,12 @@ class UploadTask(QObject):
 
 
 def start_upload(path, message, channel, on_done, on_failed, parent=None):
-    """啟動一次背景上傳。回傳 (thread, task)，呼叫端要保留參考避免被 GC。"""
+    """啟動一次背景上傳。回傳 (thread, task)，呼叫端要保留參考避免被 GC。
+
+    ``on_done`` / ``on_failed`` **必須是某個主執行緒 QObject 的 bound method**，
+    不能傳普通函式或 lambda——否則 Qt 判斷不出接收端的執行緒歸屬，會用
+    DirectConnection 在 worker 執行緒裡執行回呼，一碰 GUI 就出事。
+    """
     thread = QThread(parent)
     task = UploadTask(path, message, channel)
     task.moveToThread(thread)

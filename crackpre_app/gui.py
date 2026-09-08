@@ -72,6 +72,8 @@ class MainWindow(QMainWindow):
         self._last_result = None     # 最近一次的 FrameResult，供「拍一張」使用
         self._preview_only = False   # 目前是否為只預覽（不跑模型）
         self._snap_jobs = []         # 保留單格分析的執行緒參考，避免被 GC
+        self._loader_thread = None   # 模型載入執行緒
+        self._loader = None
         self.flight_panel = None     # _build_body 才會建，先佔位避免存取順序問題
         self._tello = TelloController(self)
         self._tello.error.connect(
@@ -240,6 +242,10 @@ class MainWindow(QMainWindow):
         self.view.setStyleSheet("background:#202020;color:#aaa;")
         self.status = QLabel("信心度: -")
 
+        # 模型載入狀態。啟動就開始載，這裡顯示進度與最後用到哪個後端。
+        self.model_status = QLabel("模型：尚未載入")
+        self.model_status.setStyleSheet("color:#888;")
+
         self.gallery = QListWidget()
         self.gallery.setFixedWidth(300)
         self.gallery.itemSelectionChanged.connect(self._on_selection)
@@ -269,6 +275,7 @@ class MainWindow(QMainWindow):
         left_col = QVBoxLayout()
         left_col.addWidget(self.view, 1)
         left_col.addWidget(self.status)
+        left_col.addWidget(self.model_status)
 
         body = QHBoxLayout()
         body.addLayout(left_col, 1)
@@ -303,6 +310,65 @@ class MainWindow(QMainWindow):
             self.channel_box.addItem(f"Channel {i}  ({cid[:6]}…)", i)
         if self.channel_box.count() == 0:
             self.channel_box.addItem("（未設定）", -1)
+
+    # -- 模型載入 ---------------------------------------------------------
+
+    def start_model_load(self) -> None:
+        """啟動時就把模型載起來，不要等到第一次偵測。"""
+        import crack_engine
+
+        from .worker import ModelLoader
+
+        if crack_engine.is_loaded():
+            self._on_model_loaded(crack_engine.loaded_backend_name())
+            return
+        if getattr(self, "_loader_thread", None) is not None:
+            return
+
+        setting = crack_engine.current_backend_setting()
+        self.model_status.setText(
+            f"模型：載入中…（設定：{setting}）")
+        self.model_status.setStyleSheet("color:#a60;")
+
+        thread = QThread(self)
+        loader = ModelLoader()
+        loader.moveToThread(thread)
+        thread.started.connect(loader.run)
+        loader.loaded.connect(self._on_model_loaded)
+        loader.failed.connect(self._on_model_failed)
+        loader.loaded.connect(thread.quit)
+        loader.failed.connect(thread.quit)
+        thread.finished.connect(self._clear_loader)
+        self._loader_thread, self._loader = thread, loader
+        thread.start()
+
+    def _clear_loader(self) -> None:
+        self._loader_thread = None
+        self._loader = None
+
+    def _on_model_loaded(self, backend: str) -> None:
+        import crack_engine
+
+        setting = crack_engine.current_backend_setting()
+        extra = "" if setting in ("auto", backend) else f"（設定 {setting}，實際退回）"
+        self.model_status.setText(f"模型：就緒　後端 {backend}{extra}")
+        self.model_status.setStyleSheet("color:#282;")
+
+    def _on_model_failed(self, msg: str) -> None:
+        self.model_status.setText(f"模型：載入失敗　{msg}")
+        self.model_status.setStyleSheet("color:#b00;")
+
+    def reload_model(self) -> None:
+        """設定改了推論後端之後重新載入。"""
+        import crack_engine
+
+        if self._thread is not None:
+            QMessageBox.information(
+                self, "重新載入模型",
+                "請先按「停止影像」再切換推論後端。")
+            return
+        crack_engine.reset_engine()
+        self.start_model_load()
 
     # -- Tello 飛行操控 ----------------------------------------------------
 
@@ -694,41 +760,44 @@ class MainWindow(QMainWindow):
         self.status.setText("分析目前畫面中…")
 
         frame = fr.overlay.copy()     # 預覽模式的 overlay 就是原始影格
-        label = fr.label
+        self._analyze_label = fr.label
         thread = QThread(self)
         task = SnapshotWorker(frame)
         task.moveToThread(thread)
         thread.started.connect(task.run)
-
-        def finish():
-            self.snapshot_btn.setText("拍一張 (P)")
-            self.snapshot_btn.setEnabled(self._thread is not None)
-            thread.quit()
-
-        def done(overlay, det):
-            try:
-                hit = self._engine.save_snapshot(overlay, det.best_score, label) \
-                    if self._engine is not None else None
-            except Exception as exc:
-                QMessageBox.warning(self, "拍一張失敗", f"{type(exc).__name__}: {exc}")
-                finish()
-                return
-            if hit is not None:
-                hit.fields["manual"] = True
-                self._on_hit(hit)
-                self.status.setText(
-                    f"已分析並存檔　信心度 {det.best_score:.3f}　{len(det)} 處"
-                    f"　-> {Path(hit.path).name}")
-            finish()
-
-        def failed(msg):
-            QMessageBox.warning(self, "分析失敗", msg)
-            finish()
-
-        task.done.connect(done)
-        task.failed.connect(failed)
+        # 同樣必須接 bound method，理由見 _on_upload：接 closure 會讓回呼
+        # 跑在 worker 執行緒，QMessageBox 就會在非 GUI 執行緒被建立。
+        task.done.connect(self._on_analyze_done)
+        task.failed.connect(self._on_analyze_failed)
+        task.done.connect(thread.quit)
+        task.failed.connect(thread.quit)
         thread.start()
         self._snap_jobs.append((thread, task))
+
+    def _finish_analyze(self) -> None:
+        self.snapshot_btn.setText("拍一張 (P)")
+        self.snapshot_btn.setEnabled(self._thread is not None)
+
+    def _on_analyze_done(self, overlay, det) -> None:
+        try:
+            hit = self._engine.save_snapshot(
+                overlay, det.best_score, self._analyze_label) \
+                if self._engine is not None else None
+        except Exception as exc:
+            QMessageBox.warning(self, "拍一張失敗", f"{type(exc).__name__}: {exc}")
+            self._finish_analyze()
+            return
+        if hit is not None:
+            hit.fields["manual"] = True
+            self._on_hit(hit)
+            self.status.setText(
+                f"已分析並存檔　信心度 {det.best_score:.3f}　{len(det)} 處"
+                f"　-> {Path(hit.path).name}")
+        self._finish_analyze()
+
+    def _on_analyze_failed(self, msg: str) -> None:
+        QMessageBox.warning(self, "分析失敗", msg)
+        self._finish_analyze()
 
     # -- 命中清單操作（全部手動） ------------------------------------------
 
@@ -750,9 +819,14 @@ class MainWindow(QMainWindow):
     def _on_settings(self) -> None:
         from .settings_dialog import SettingsDialog
 
+        import crack_engine
+
+        before = crack_engine.current_backend_setting()
         if SettingsDialog(self).exec():
             config.reload_env()
             self._refresh_channels()
+            if crack_engine.current_backend_setting() != before:
+                self.reload_model()
 
     def _on_upload(self) -> None:
         path = self._selected_path()
@@ -768,20 +842,35 @@ class MainWindow(QMainWindow):
 
         self.upload_btn.setEnabled(False)
         self.upload_btn.setText("上傳中…")
+        self._upload_channel = channel
 
-        def done(url: str) -> None:
-            self.upload_btn.setEnabled(True)
-            self.upload_btn.setText("上傳到 LINE")
-            QMessageBox.information(self, "上傳完成", f"已推播到 Channel {channel}。\n{url}")
-
-        def failed(msg: str) -> None:
-            self.upload_btn.setEnabled(True)
-            self.upload_btn.setText("上傳到 LINE")
-            QMessageBox.warning(self, "上傳失敗",
-                                f"{msg}\n\n請在「設定」確認 IMGBB_API_KEY 與 LINE 設定。")
-
+        # 回呼一定要是 MainWindow 的 bound method，不能用區域 closure。
+        # 訊號從 worker 執行緒發出，若接收端是普通函式，PySide 判斷不出它屬於
+        # 哪個執行緒，會退回 DirectConnection——回呼就在 worker 執行緒裡執行，
+        # 於是 QMessageBox 在非 GUI 執行緒被建立，出現
+        #   QObject::setParent: Cannot set parent, new parent is in a different thread
+        #   QBasicTimer::stop: Failed. Possibly trying to stop from a different thread
+        # 然後整個程式卡住。接成 bound method，Qt 才會用 QueuedConnection 把回呼
+        # 排回主執行緒。
         self._uploads.append(
-            start_upload(path, "CrackPre 偵測到裂縫", channel, done, failed, self))
+            start_upload(path, "CrackPre 偵測到裂縫", channel,
+                         self._on_upload_done, self._on_upload_failed, self))
+
+    def _reset_upload_btn(self) -> None:
+        self.upload_btn.setEnabled(self._selected_path() is not None)
+        self.upload_btn.setText("上傳到 LINE")
+
+    def _on_upload_done(self, url: str) -> None:
+        self._reset_upload_btn()
+        QMessageBox.information(
+            self, "上傳完成",
+            f"已推播到 Channel {self._upload_channel}。\n{url}")
+
+    def _on_upload_failed(self, msg: str) -> None:
+        self._reset_upload_btn()
+        QMessageBox.warning(
+            self, "上傳失敗",
+            f"{msg}\n\n請在「設定」確認 IMGBB_API_KEY 與 LINE 設定。")
 
     def _on_delete(self) -> None:
         path = self._selected_path()

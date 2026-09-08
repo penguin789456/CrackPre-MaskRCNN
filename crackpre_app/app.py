@@ -99,17 +99,12 @@ def _selftest() -> int:
         print("selftest FAIL: 找不到示範影像")
         return 2
 
-    # 模式對話框：清單要有兩種模式，且選取後回傳正確的值
+    # 模式對話框：兩個按鈕，按下去要回傳對應的模式
     dlg = ModeDialog()
-    if dlg.list.count() != 2:
-        print(f"selftest FAIL: 模式清單有 {dlg.list.count()} 項，應為 2")
+    if set(dlg.buttons_by_mode) != {MODE_IMAGE, MODE_CONTINUOUS}:
+        print(f"selftest FAIL: 模式按鈕不對 {set(dlg.buttons_by_mode)}")
         return 3
-    rows = {dlg.list.item(i).data(Qt.UserRole): i for i in range(dlg.list.count())}
-    if set(rows) != {MODE_IMAGE, MODE_CONTINUOUS}:
-        print(f"selftest FAIL: 模式清單內容不對 {set(rows)}")
-        return 3
-    dlg.list.setCurrentRow(rows[MODE_IMAGE])
-    dlg._accept()
+    dlg.buttons_by_mode[MODE_IMAGE].click()
     if dlg.mode != MODE_IMAGE:
         print("selftest FAIL: 模式對話框沒有回傳選擇")
         return 3
@@ -166,17 +161,152 @@ def _selftest() -> int:
     flight_ok = _selftest_flight(app, frames)
     snap_ok = _selftest_snapshot(app, frames)
     preview_ok, preview_fps = _selftest_preview(app, frames)
+    model_ok, backend_name = _selftest_model(app, frames)
+    thread_ok = _selftest_threading(app, frames)
 
     ok = (processed >= 1 and has_pickers and exact and flight_ok
-          and snap_ok and preview_ok)
+          and snap_ok and preview_ok and model_ok and thread_ok)
     print(f"selftest {'OK' if ok else 'FAIL'}: "
           f"連續模式處理 {processed} 幀、命中 {hits} 張；"
           f"圖片模式選擇器 {'有' if has_pickers else '無'}、"
           f"處理 {img_processed}/{len(paths)} 張{'（相符）' if exact else '（不符！）'}；"
           f"飛行操控 {'通過' if flight_ok else '失敗'}；"
           f"拍一張 {'通過' if snap_ok else '失敗'}；"
-          f"預覽 {'通過' if preview_ok else '失敗'}（{preview_fps:.0f} fps）")
+          f"預覽 {'通過' if preview_ok else '失敗'}（{preview_fps:.0f} fps）；"
+          f"啟動載入 {'通過' if model_ok else '失敗'}（{backend_name}）；"
+          f"執行緒 {'通過' if thread_ok else '失敗'}")
     return 0 if ok else 5
+
+
+def _selftest_model(app, frames):
+    """驗證啟動時載入模型，以及設定裡的引擎選擇。"""
+    import time
+
+    import crack_engine
+
+    problems = []
+
+    # 從乾淨狀態開始，確認 start_model_load() 真的會去載
+    crack_engine.reset_engine()
+    win = MainWindow(mode=MODE_CONTINUOUS, demo_frames=frames)
+    win.show()
+    if crack_engine.is_loaded():
+        problems.append("reset_engine() 之後不該還是已載入狀態")
+    if "尚未載入" not in win.model_status.text():
+        problems.append(f"初始狀態文字不對：{win.model_status.text()}")
+
+    win.start_model_load()
+    t0 = time.time()
+    while time.time() - t0 < 180 and not crack_engine.is_loaded():
+        app.processEvents()
+        time.sleep(0.02)
+    for _ in range(200):                 # 讓 loaded signal 送達
+        app.processEvents()
+        time.sleep(0.01)
+
+    backend = crack_engine.loaded_backend_name() or "?"
+    if not crack_engine.is_loaded():
+        problems.append("啟動載入沒有把模型載起來")
+    elif "就緒" not in win.model_status.text():
+        problems.append(f"載入完成後狀態沒更新：{win.model_status.text()}")
+
+    # 設定畫面要能選引擎，且不可用的後端要被停用而不是藏起來
+    from .settings_dialog import SettingsDialog
+
+    dlg = SettingsDialog(win)
+    if dlg.backend_box.count() != 1 + len(crack_engine.BACKEND_FILES):
+        problems.append(f"引擎下拉項目數不對：{dlg.backend_box.count()}")
+    if dlg.backend_box.findData("auto") < 0:
+        problems.append("引擎下拉缺少「自動」")
+    avail = crack_engine.available_backends()
+    for name, (ok_flag, _reason) in avail.items():
+        idx = dlg.backend_box.findData(name)
+        if idx < 0:
+            problems.append(f"引擎下拉缺少 {name}")
+            continue
+        enabled = dlg.backend_box.model().item(idx).isEnabled()
+        if enabled != ok_flag:
+            problems.append(f"{name} 可用={ok_flag} 但選單 enabled={enabled}")
+    if dlg.values().get("CRACK_BACKEND") is None:
+        problems.append("設定沒有輸出 CRACK_BACKEND")
+    dlg.close()
+
+    win.close()
+    for p in problems:
+        print(f"  啟動載入問題: {p}")
+    return not problems, backend
+
+
+def _selftest_threading(app, frames) -> bool:
+    """背景工作的回呼必須回到主執行緒才能碰 GUI。
+
+    這是實際踩到的當機：回呼接的是區域 closure，PySide 判斷不出接收端執行緒，
+    退回 DirectConnection，於是 QMessageBox 在 worker 執行緒被建立，噴出
+    QObject::setParent / QBasicTimer::stop 然後整個卡住。
+    接成主執行緒 QObject 的 bound method 才會走 QueuedConnection。
+    """
+    import threading
+    import time
+
+    from PySide6.QtCore import QObject, QThread as _QThread, Signal, Slot
+
+    problems = []
+    main_id = threading.get_ident()
+    win = MainWindow(mode=MODE_CONTINUOUS, demo_frames=frames)
+    win.show()
+
+    # 1) 靜態檢查：回呼必須是 bound method。接 closure 就是當機的成因。
+    for name in ("_on_upload_done", "_on_upload_failed",
+                 "_on_analyze_done", "_on_analyze_failed"):
+        fn = getattr(win, name, None)
+        if fn is None or not hasattr(fn, "__self__"):
+            problems.append(f"{name} 不是 MainWindow 的 bound method")
+
+    # 2) 執行期檢查：worker 執行緒發出的訊號，接到主執行緒 QObject 的
+    #    bound method 時，必須在主執行緒被執行（QueuedConnection）。
+    class _Emitter(QObject):
+        fire = Signal()
+
+        @Slot()
+        def run(self):
+            self.fire.emit()
+
+    class _Receiver(QObject):
+        def __init__(self):
+            super().__init__()
+            self.tid = None
+
+        @Slot()
+        def on_fire(self):
+            self.tid = threading.get_ident()
+
+    thread = _QThread(win)          # 給 parent，避免被 GC
+    emitter = _Emitter()
+    receiver = _Receiver()          # 沒 moveToThread -> 屬於主執行緒
+    emitter.moveToThread(thread)
+    thread.started.connect(emitter.run)
+    emitter.fire.connect(receiver.on_fire)
+    emitter.fire.connect(thread.quit)
+    thread.start()
+
+    t0 = time.time()
+    while time.time() - t0 < 10 and receiver.tid is None:
+        app.processEvents()
+        time.sleep(0.005)
+    thread.quit()
+    thread.wait(3000)
+
+    if receiver.tid is None:
+        problems.append("worker 訊號沒有送達")
+    elif receiver.tid != main_id:
+        problems.append(
+            f"回呼在 worker 執行緒執行（tid={receiver.tid}，主={main_id}）"
+            "——這樣碰 GUI 會當掉")
+
+    win.close()
+    for p in problems:
+        print(f"  執行緒問題: {p}")
+    return not problems
 
 
 def _selftest_preview(app, frames):
@@ -438,6 +568,10 @@ def main() -> int:
     if win is not holder:
         holder.close()
     win.show()
+
+    # 啟動就開始載模型。載入含 warmup 要好幾秒，等到使用者按「連線」才開始
+    # 的話那幾秒會被當成當掉。狀態顯示在畫面下方。
+    win.start_model_load()
 
     missing = config.missing_required()
     if missing:

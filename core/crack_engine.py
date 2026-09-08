@@ -383,10 +383,45 @@ _engine = None
 _engine_lock = threading.Lock()
 
 
+#: 後端名稱 -> (模型檔, 說明)
+BACKEND_FILES = {
+    "onnx": (ONNX_PATH, "onnxruntime，最輕量"),
+    "torchscript": (TS_PATH, "torch + torchvision"),
+    "detectron2": (D2_WEIGHTS, "torch + detectron2，最重"),
+}
+
+
+def current_backend_setting() -> str:
+    """目前設定的後端。每次讀環境變數，這樣設定改完不用重開程式。"""
+    return os.getenv("CRACK_BACKEND", "auto").lower() or "auto"
+
+
+def available_backends() -> dict:
+    """回傳 {後端名: (是否可用, 原因)}。給設定畫面標示哪些選得動。"""
+    result = {}
+    for name, (path, _desc) in BACKEND_FILES.items():
+        if not os.path.exists(path):
+            result[name] = (False, f"找不到 {os.path.basename(path)}")
+            continue
+        try:
+            if name == "onnx":
+                import onnxruntime  # noqa: F401
+            elif name == "torchscript":
+                import torch  # noqa: F401
+                import torchvision  # noqa: F401
+            else:
+                import detectron2  # noqa: F401
+            result[name] = (True, "可用")
+        except Exception as exc:
+            result[name] = (False, f"缺少套件：{type(exc).__name__}")
+    return result
+
+
 def _build_backend():
+    setting = current_backend_setting()
     order = (
-        [BACKEND]
-        if BACKEND in ("onnx", "torchscript", "detectron2")
+        [setting]
+        if setting in ("onnx", "torchscript", "detectron2")
         else ["onnx", "torchscript", "detectron2"]
     )
     errors = []
@@ -452,6 +487,25 @@ def get_engine():
             if _engine is None:
                 _engine = CrackEngine()
     return _engine
+
+
+def is_loaded() -> bool:
+    return _engine is not None
+
+
+def loaded_backend_name():
+    """已載入的後端名稱；還沒載入回 None。"""
+    return _engine.backend.name if _engine is not None else None
+
+
+def reset_engine() -> None:
+    """丟掉目前的引擎，下次 get_engine() 會依最新設定重新載入。
+
+    在設定裡改了 CRACK_BACKEND 之後必須呼叫，否則還是用舊的那顆。
+    """
+    global _engine
+    with _engine_lock:
+        _engine = None
 
 
 def preload():

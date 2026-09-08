@@ -11,6 +11,26 @@ from .engine import DetectionEngine
 from .sources import CaptureBackend
 
 
+class ModelLoader(QObject):
+    """在背景把模型載起來。
+
+    改成啟動時就載，而不是等第一次偵測才載：載入含 warmup 要好幾秒，
+    等到使用者按下「連線」才開始，那幾秒會被誤認為當掉。
+    """
+
+    loaded = Signal(str)      # 實際用到的後端名稱
+    failed = Signal(str)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from crack_engine import get_engine
+
+            self.loaded.emit(get_engine().backend.name)
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
 class SnapshotWorker(QObject):
     """對「單一影格」跑一次推論。
 

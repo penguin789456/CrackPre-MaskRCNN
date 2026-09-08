@@ -1,9 +1,6 @@
 """進入系統時選擇工作模式。
 
-用清單而不是大按鈕：清單可以把每個模式的說明並排看完再決定，
-也方便之後增加模式而不用重排版面。
-
-兩種模式在行為上有實質差異，不只是換個來源：
+兩個大按鈕，一按就進入。兩種模式在行為上有實質差異，不只是換個來源：
 
   圖片模式  有限批次，每一張都會處理，一張都不漏。適合事後檢視既有照片。
   連續模式  即時串流，處理不完的舊影格會被丟掉，永遠處理最新畫面。
@@ -13,10 +10,8 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QLabel, QListWidget, QListWidgetItem,
-    QVBoxLayout,
+    QDialog, QDialogButtonBox, QLabel, QPushButton, QVBoxLayout,
 )
 
 MODE_IMAGE = "image"
@@ -46,37 +41,32 @@ class ModeDialog(QDialog):
         title = QLabel("要用哪種方式進行裂縫偵測？")
         title.setStyleSheet("font-size:15px;font-weight:bold;")
 
-        self.list = QListWidget()
-        self.list.setSpacing(2)
-        for key, label, desc in MODES:
-            item = QListWidgetItem(f"{label}\n{desc}")
-            item.setData(Qt.UserRole, key)
-            self.list.addItem(item)
-        self.list.setCurrentRow(0)
-        # 雙擊直接進入，不用再按確定
-        self.list.itemDoubleClicked.connect(lambda _: self._accept())
-
-        self.buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.buttons.button(QDialogButtonBox.Ok).setText("進入系統")
-        self.buttons.accepted.connect(self._accept)
-        self.buttons.rejected.connect(self.reject)
-
         layout = QVBoxLayout()
         layout.addWidget(title)
-        layout.addSpacing(8)
-        layout.addWidget(self.list, 1)
-        layout.addSpacing(6)
-        layout.addWidget(self.buttons)
+        layout.addSpacing(10)
+
+        self.buttons_by_mode = {}
+        for key, label, desc in MODES:
+            btn = QPushButton(label)
+            btn.setMinimumHeight(58)
+            btn.clicked.connect(lambda _=False, k=key: self._choose(k))
+            note = QLabel(desc)
+            note.setStyleSheet("color:#888;")
+            note.setWordWrap(True)
+            layout.addWidget(btn)
+            layout.addWidget(note)
+            layout.addSpacing(14)
+            self.buttons_by_mode[key] = btn
+
+        box = QDialogButtonBox(QDialogButtonBox.Cancel)
+        box.rejected.connect(self.reject)
+        layout.addWidget(box)
         self.setLayout(layout)
 
-        self.list.setFocus()
+        self.buttons_by_mode[MODES[0][0]].setFocus()
 
-    def _accept(self) -> None:
-        item = self.list.currentItem()
-        if item is None:
-            return
-        self._mode = item.data(Qt.UserRole)
+    def _choose(self, mode: str) -> None:
+        self._mode = mode
         self.accept()
 
     @property

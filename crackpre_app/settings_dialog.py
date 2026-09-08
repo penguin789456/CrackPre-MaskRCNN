@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QVBoxLayout,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel,
+    QLineEdit, QMessageBox, QPushButton, QVBoxLayout,
 )
 
 from . import config
@@ -23,6 +23,26 @@ class SettingsDialog(QDialog):
         self._fields = {}
 
         form = QFormLayout()
+
+        # --- 推論引擎 ---
+        # 不可用的選項照樣列出但標明原因，比直接藏起來好——使用者才知道
+        # 「為什麼沒有 onnx 可選」。
+        import crack_engine
+
+        self.backend_box = QComboBox()
+        avail = crack_engine.available_backends()
+        self.backend_box.addItem("自動（依序 onnx → torchscript → detectron2）", "auto")
+        for name, (path, desc) in crack_engine.BACKEND_FILES.items():
+            ok, reason = avail.get(name, (False, "未知"))
+            self.backend_box.addItem(f"{name}　{desc}　[{reason}]", name)
+            if not ok:
+                idx = self.backend_box.count() - 1
+                self.backend_box.model().item(idx).setEnabled(False)
+        want = (current.get("CRACK_BACKEND", "") or "auto").lower()
+        pos = self.backend_box.findData(want)
+        self.backend_box.setCurrentIndex(pos if pos >= 0 else 0)
+        form.addRow("推論引擎", self.backend_box)
+
         for key, label, secret in config.EDITABLE_KEYS:
             edit = QLineEdit(current.get(key, ""))
             if secret:
@@ -62,7 +82,9 @@ class SettingsDialog(QDialog):
                 edit.setEchoMode(QLineEdit.Normal if shown else QLineEdit.Password)
 
     def values(self) -> dict:
-        return {k: e.text().strip() for k, (e, _) in self._fields.items()}
+        out = {k: e.text().strip() for k, (e, _) in self._fields.items()}
+        out["CRACK_BACKEND"] = self.backend_box.currentData()
+        return out
 
     def _on_save(self) -> None:
         try:
