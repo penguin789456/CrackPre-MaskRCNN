@@ -1,4 +1,4 @@
-# CrackPre 3.5.3 — 使用說明
+# CrackPre 3.6.0 — 使用說明
 
 用 Mask R-CNN 偵測混凝土裂縫。支援 Tello EDU、RTSP 串流、本機影片與既有圖片，
 結果可手動推播到 LINE。
@@ -294,6 +294,7 @@ bin/                 ngrok
 
 ## 文件
 
+- [CHANGELOG.md](CHANGELOG.md) — 版本更新紀錄
 - [docs/INFERENCE.md](docs/INFERENCE.md) — 模型、匯出流程、後端與量測工具
 - [docs/GUI.md](docs/GUI.md) — 桌面前端的架構與設計取捨
 - [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md) — 依賴瘦身與延遲最佳化的完整紀錄

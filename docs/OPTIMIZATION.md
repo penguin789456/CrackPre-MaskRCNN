@@ -45,8 +45,8 @@ def PreImg(img, channel=1):
 ### 量測
 
 ```
-cd D:CrackPreVer3.5.3
-python toolsbench_latency.py --legacy      # 新舊行為並排比較
+cd D:\CrackPreVer3.5.3
+python tools\bench_latency.py --legacy      # 新舊行為並排比較
 ```
 
 看 **p50 / p95**，不要只看平均——平均會被第一次的模型載入洗掉。
@@ -99,8 +99,8 @@ set CRACK_CONTINUOUS_INTERVAL=0.3
 
 ```
 :: 只在「匯出端」做一次（原本那個重環境）
-cd D:CrackPreVer3.5.3
-python toolsexport_slim_model.py --format both
+cd D:\CrackPreVer3.5.3
+python tools\export_slim_model.py --format both
 ```
 
 產生 `models/model.onnx`、`models/model.ts`、`models/model_manifest.json`。
@@ -133,12 +133,12 @@ appsink callback 裡呼叫 HighGUI，Windows 上會偶發卡死）；抓幀執�
 
 | | 舊環境 | 新部署環境 |
 |---|---|---|
-| 安裝方式 | conda + `pip install -e detectron2 --no-build-isolation` | `pip install -r requirements-runtime.txt` |
+| 安裝方式 | conda + `pip install -e detectron2 --no-build-isolation` | `pip install -r requirements\requirements-runtime.txt` |
 | C++ Build Tools | 必要 | 不需要 |
 | conda | 必要 | 不需要（venv 即可） |
 | 主要套件 | torch, torchvision, detectron2, pycocotools, fvcore, matplotlib, tensorboard, PyGObject, GStreamer ×10 | onnxruntime, numpy, opencv-python |
 
-安裝步驟見 `setUp-slim.txt`；匯出端仍用原本的 `setUp.txt` + `requirements-export.txt`。
+安裝步驟見 `requirements\setUp-slim.txt`；匯出端仍用原本的 `requirements\setUp.txt` + `requirements\requirements-export.txt`。
 
 ---
 
@@ -147,8 +147,8 @@ appsink callback 裡呼叫 HighGUI，Windows 上會偶發卡死）；抓幀執�
 三層，由快到慢：
 
 ```
-cd D:CrackPreVer3.5.3
-python toolsselftest.py        # 秒級。不需要模型權重，只要 numpy + opencv
+cd D:\CrackPreVer3.5.3
+python tools\selftest.py        # 秒級。不需要模型權重，只要 numpy + opencv
 python tools	est_parity.py     # 秒級。需要 detectron2。逐函式比對數值
 python toolsmpare_legacy.py --backend torchscript --save-diff   # ~10 分鐘。端到端
 ```
@@ -170,8 +170,8 @@ python toolsmpare_legacy.py --backend torchscript --save-diff   # ~10 分鐘。
 關鍵指標是**幀齡**（frame age）——影格送出到 worker 真的開始處理它之間的時間。
 
 ```
-python toolsbench_continuous.py --fake --compare    # 秒級，不載模型，並排對照
-python toolsbench_continuous.py --seconds 30        # 真模型
+python tools\bench_continuous.py --fake --compare    # 秒級，不載模型，並排對照
+python tools\bench_continuous.py --seconds 30        # 真模型
 ```
 
 實測（假推論 300 ms/張、送圖 15 fps）：
@@ -193,7 +193,7 @@ worker 幾乎立刻接手，幀齡遠小於推論時間。第一版用平均差�
 ### 沒有無人機也能跑 RTSP.py
 
 ```
-python toolsmake_test_video.py                  # 用 raw/ 的圖做一支循環影片
+python tools\make_test_video.py                  # 用 raw/ 的圖做一支循環影片
 set CRACK_RTSP_URL=raw\_test_source.mp4
 python RTSP.py                             # 按 c 開連續判別
 ```
@@ -268,8 +268,8 @@ tracing 的樣本。要跨解析度、跨數十張才有意義。
 ### 驗證
 
 ```
-python coresettings.py        # 印出設定摘要，金鑰遮蔽
-python toolsselftest.py        # 含 .env parser、settings、uploader 前置檢查
+python core\settings.py        # 印出設定摘要，金鑰遮蔽
+python tools\selftest.py        # 含 .env parser、settings、uploader 前置檢查
 ```
 
 `uploader` 的請求格式已對真實 imgbb API 驗證過：用假 key + 合成 1×1 圖片

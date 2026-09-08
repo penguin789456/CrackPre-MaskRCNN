@@ -7,4 +7,4 @@ Mask R-CNN 引擎（CrackPre/crack_engine.py），不是 DDRNet。
 啟動時會先問要用「圖片模式」還是「連續模式」，見 mode_dialog.py。
 """
 
-__version__ = "3.5.3"
+__version__ = "3.6.0"
