@@ -69,6 +69,7 @@ class MainWindow(QMainWindow):
         self._uploads = []           # 保留執行緒參考，避免被 GC
         self._selected_paths = []    # 圖片模式選到的檔案
         self._processed = 0
+        self._last_result = None     # 最近一次的 FrameResult，供「拍一張」使用
         self.flight_panel = None     # _build_body 才會建，先佔位避免存取順序問題
         self._tello = TelloController(self)
         self._tello.error.connect(
@@ -137,6 +138,16 @@ class MainWindow(QMainWindow):
         self.stop_btn = QPushButton("停止")
         self.stop_btn.clicked.connect(self._on_stop)
         self.stop_btn.setEnabled(False)
+
+        # 手動擷取。舊的 manual-control-pygame.py 是按 1~9 拍單張，新版統一用 P。
+        # 對所有連續來源都有效（Tello / RTSP / 影片），不是只有 Tello。
+        self.snapshot_btn = QPushButton("拍一張 (P)")
+        self.snapshot_btn.setToolTip(
+            "不論信心度高低，立刻把目前畫面存進命中清單\n"
+            "快速鍵 P（需先點一下畫面取得焦點）")
+        self.snapshot_btn.clicked.connect(self._on_snapshot)
+        self.snapshot_btn.setEnabled(False)
+
         self.settings_btn = QPushButton("設定")
         self.settings_btn.clicked.connect(self._on_settings)
 
@@ -145,6 +156,9 @@ class MainWindow(QMainWindow):
         self.controls.addWidget(self.thr_label)
         self.controls.addWidget(self.start_btn)
         self.controls.addWidget(self.stop_btn)
+        if self.mode != MODE_IMAGE:
+            # 圖片模式沒有「當前畫面」的概念，逐張跑完就結束了
+            self.controls.addWidget(self.snapshot_btn)
         self.controls.addWidget(self.settings_btn)
 
     def _build_flight_panel(self) -> QGroupBox:
@@ -184,7 +198,7 @@ class MainWindow(QMainWindow):
         row1.addWidget(self.tello_state)
         row1.addStretch(1)
 
-        hint = QLabel(FLIGHT_HINT + "　（點一下畫面取得鍵盤焦點）")
+        hint = QLabel(FLIGHT_HINT + "　P 拍一張　（點一下畫面取得鍵盤焦點）")
         hint.setStyleSheet("color:#888;")
 
         col = QVBoxLayout()
@@ -331,6 +345,16 @@ class MainWindow(QMainWindow):
                 and self._tello.is_connected)
 
     def keyPressEvent(self, event) -> None:
+        # P = 拍一張。放在飛行按鍵之前處理，因為它對所有連續來源都有效
+        # （RTSP、影片檔也能用），不是只有接了 Tello 才有。
+        # 擋掉 autoRepeat：按住 P 不該連續存出一堆檔。
+        if (self.mode != MODE_IMAGE and event.key() == Qt.Key_P
+                and not event.isAutoRepeat()):
+            if self.snapshot_btn.isEnabled():
+                self._on_snapshot()
+            event.accept()
+            return
+
         # autoRepeat 會在按住時連續觸發，速度已經是持續值，重複設定沒意義
         if (self._flight_active() and not event.isAutoRepeat()
                 and event.key() in FLIGHT_KEYS):
@@ -453,8 +477,11 @@ class MainWindow(QMainWindow):
         self._worker.error.connect(self._on_error)
         self._thread.start()
 
+        self._last_result = None
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        # 第一格處理完才啟用；在那之前沒有畫面可以拍
+        self.snapshot_btn.setEnabled(False)
         self._set_source_enabled(False)
         self.view.setText("模型載入中…")
 
@@ -483,6 +510,7 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.stop_btn.setText("停止")
+        self.snapshot_btn.setEnabled(False)   # 停止後沒有即時畫面可拍
         self._set_source_enabled(True)
         self._update_flight_buttons()   # 偵測用的連線可能已經被釋放
         if self.mode == MODE_IMAGE:
@@ -497,6 +525,9 @@ class MainWindow(QMainWindow):
 
     def _on_frame(self, fr) -> None:
         self._processed += 1
+        self._last_result = fr
+        if self.mode != MODE_IMAGE and not self.snapshot_btn.isEnabled():
+            self.snapshot_btn.setEnabled(True)
         self.view.setPixmap(_to_pixmap(fr.overlay).scaled(
             self.view.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
@@ -519,9 +550,34 @@ class MainWindow(QMainWindow):
 
     def _on_hit(self, hit: HitRecord) -> None:
         name = hit.label or Path(hit.path).name
-        item = QListWidgetItem(f"{name}　({hit.score:.2f})")
+        mark = "📷 " if hit.fields.get("manual") else ""
+        item = QListWidgetItem(f"{mark}{name}　({hit.score:.2f})")
         item.setData(Qt.UserRole, hit.path)
         self.gallery.insertItem(0, item)
+
+    # -- 手動擷取 ---------------------------------------------------------
+
+    def _on_snapshot(self) -> None:
+        """把目前畫面存進命中清單，不論信心度高低。
+
+        取代舊 manual-control-pygame.py 按 1~9 拍單張的工作流。
+        """
+        if self._engine is None:
+            QMessageBox.information(self, "拍一張", "請先按「開始」。")
+            return
+        fr = self._last_result
+        if fr is None:
+            QMessageBox.information(self, "拍一張", "還沒有畫面，等第一格處理完再試。")
+            return
+        try:
+            hit = self._engine.save_snapshot(fr.overlay, fr.score, fr.label)
+        except Exception as exc:
+            QMessageBox.warning(self, "拍一張失敗", f"{type(exc).__name__}: {exc}")
+            return
+        hit.fields["manual"] = True
+        self._on_hit(hit)
+        self.status.setText(
+            f"已擷取　信心度 {fr.score:.3f}　{fr.count} 處　-> {Path(hit.path).name}")
 
     # -- 命中清單操作（全部手動） ------------------------------------------
 

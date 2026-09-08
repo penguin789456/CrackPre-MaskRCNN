@@ -218,6 +218,17 @@ class DetectionEngine:
             backend.release()
         return hits
 
+    # -- 手動擷取 ---------------------------------------------------------
+
+    def save_snapshot(self, overlay: np.ndarray, score: float,
+                      label: str = "") -> HitRecord:
+        """使用者按下「拍一張」時呼叫。
+
+        刻意**不看門檻也不受冷卻限制**——這是明確的手動指令，就算完全沒偵測到
+        裂縫也要存下來。自動存檔那條路（門檻 + 冷卻）留給 run() 迴圈。
+        """
+        return self._save(overlay, score, label or "snapshot")
+
     # -- 本機優先存檔 -----------------------------------------------------
 
     def _save(self, overlay: np.ndarray, score: float, label: str = "") -> HitRecord:

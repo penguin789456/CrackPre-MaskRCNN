@@ -104,14 +104,84 @@ def _selftest() -> int:
     exact = img_processed == len(paths)
 
     flight_ok = _selftest_flight(app, frames)
+    snap_ok = _selftest_snapshot(app, frames)
 
-    ok = processed >= 1 and has_pickers and exact and flight_ok
+    ok = processed >= 1 and has_pickers and exact and flight_ok and snap_ok
     print(f"selftest {'OK' if ok else 'FAIL'}: "
           f"連續模式處理 {processed} 幀、命中 {hits} 張；"
           f"圖片模式選擇器 {'有' if has_pickers else '無'}、"
           f"處理 {img_processed}/{len(paths)} 張{'（相符）' if exact else '（不符！）'}；"
-          f"飛行操控 {'通過' if flight_ok else '失敗'}")
+          f"飛行操控 {'通過' if flight_ok else '失敗'}；"
+          f"拍一張 {'通過' if snap_ok else '失敗'}")
     return 0 if ok else 5
+
+
+def _selftest_snapshot(app, frames) -> bool:
+    """驗證「拍一張」：低於門檻也要存得下來，且圖片模式沒有這個按鈕。"""
+    import os
+    import time
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QKeyEvent
+
+    problems = []
+
+    win = MainWindow(mode=MODE_CONTINUOUS, demo_frames=frames)
+    win.show()
+    demo_idx = [i for i in range(win.source_box.count())
+                if win.source_box.itemData(i) == "demo"]
+    if not demo_idx:
+        return True                       # 沒有示範來源就沒得測
+    win.source_box.setCurrentIndex(demo_idx[0])
+    # 門檻設到最高：自動存檔不會觸發，命中清單裡出現的只可能是手動拍的
+    win.threshold.setValue(100)
+    if win.snapshot_btn.isEnabled():
+        problems.append("尚未開始時「拍一張」不該可按")
+    win._on_start()
+
+    t0 = time.time()
+    while time.time() - t0 < 180 and not win.snapshot_btn.isEnabled():
+        app.processEvents()
+        time.sleep(0.02)
+
+    if not win.snapshot_btn.isEnabled():
+        problems.append("有畫面之後「拍一張」仍不可按")
+    else:
+        before = win.gallery.count()
+        # 走鍵盤路徑，順便驗 P 有沒有接上
+        win.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_P, Qt.NoModifier))
+        app.processEvents()
+        if win.gallery.count() != before + 1:
+            problems.append(f"按 P 沒有新增命中（{before} -> {win.gallery.count()}）")
+        else:
+            item = win.gallery.item(0)
+            path = item.data(Qt.UserRole)
+            if not (path and os.path.exists(path)):
+                problems.append("命中檔案沒有實際寫出")
+            if "📷" not in item.text():
+                problems.append("手動擷取沒有標記")
+
+    win._on_stop()
+    for _ in range(2000):
+        app.processEvents()
+        if win._thread is None:
+            break
+        time.sleep(0.02)
+    if win.snapshot_btn.isEnabled():
+        problems.append("停止後「拍一張」不該可按")
+    win.close()
+
+    # 圖片模式不該有這個按鈕出現在控制列
+    win2 = MainWindow(mode=MODE_IMAGE, demo_frames=frames)
+    win2.show()
+    app.processEvents()
+    if win2.snapshot_btn.isVisible():
+        problems.append("圖片模式不該顯示「拍一張」")
+    win2.close()
+
+    for p in problems:
+        print(f"  拍一張問題: {p}")
+    return not problems
 
 
 def _selftest_flight(app, frames) -> bool:
