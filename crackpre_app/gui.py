@@ -135,17 +135,22 @@ class MainWindow(QMainWindow):
         self.thr_label = QLabel()
         self._update_thr_label(self.threshold.value())
 
-        # 只預覽：開攝影機但不跑模型。畫面更新率不再被推論綁死（CPU 上約
-        # 0.3 fps），飛行時才看得到即時影像。
-        self.preview_btn = QPushButton("只預覽")
-        self.preview_btn.setToolTip(
-            "只開攝影機、不跑辨識，畫面以來源原本的幀率顯示。\n"
-            "用來對焦、取景、操控無人機。此時按 P 會單獨分析那一格。")
-        self.preview_btn.clicked.connect(self._on_preview)
+        # 「只預覽」與「開始辨識」本質上都是「開始抓影像」，做成兩個按鈕會衝突。
+        # 改成下拉選行為 + 單一動作鈕。
+        self.run_mode_box = QComboBox()
+        self.run_mode_box.addItem("只預覽（不跑辨識）", True)
+        self.run_mode_box.addItem("開始辨識", False)
+        self.run_mode_box.setToolTip(
+            "只預覽：畫面以來源原本的幀率顯示，不載模型。用來對焦、取景、操控無人機。\n"
+            "開始辨識：畫面跟著推論速度走（CPU 上約 0.3 fps），自動存下超過門檻的畫面。")
 
-        self.start_btn = QPushButton("開始辨識")
+        self.start_btn = QPushButton("連線")
+        self.start_btn.setToolTip("依左邊選的行為開始抓影像。Tello 來源會一併建立連線。")
         self.start_btn.clicked.connect(self._on_start)
-        self.stop_btn = QPushButton("停止")
+        # 標明是「停止影像」而不是「中斷連線」——後者在飛行面板，兩者語意不同：
+        # 停止影像只是關掉串流迴圈，飛機還連著也還在飛。
+        self.stop_btn = QPushButton("停止影像")
+        self.stop_btn.setToolTip("停止抓影像／辨識。不會中斷 Tello 連線，也不會讓它降落。")
         self.stop_btn.clicked.connect(self._on_stop)
         self.stop_btn.setEnabled(False)
 
@@ -165,7 +170,7 @@ class MainWindow(QMainWindow):
         self.controls.addWidget(self.threshold)
         self.controls.addWidget(self.thr_label)
         if self.mode != MODE_IMAGE:
-            self.controls.addWidget(self.preview_btn)
+            self.controls.addWidget(self.run_mode_box)
         self.controls.addWidget(self.start_btn)
         self.controls.addWidget(self.stop_btn)
         if self.mode != MODE_IMAGE:
@@ -177,12 +182,21 @@ class MainWindow(QMainWindow):
         """Tello 手動飛行操控。只有連續模式且來源是 Tello 時才顯示。"""
         box = QGroupBox("飛行操控")
 
-        self.connect_btn = QPushButton("連線")
-        self.connect_btn.clicked.connect(self._on_tello_connect)
+        # 這裡沒有「連線」鈕——控制列的「連線」已經會建立 Tello 連線並開影像，
+        # 再放一個只會讓人搞不清楚該按哪個。起飛本身也會自己確保連線。
         self.takeoff_btn = QPushButton("起飛 (T)")
-        self.takeoff_btn.clicked.connect(self._tello.takeoff)
+        self.takeoff_btn.setToolTip("若尚未連線／尚未開影像，會自動先連線並開啟畫面再起飛")
+        self.takeoff_btn.clicked.connect(self._on_takeoff)
         self.land_btn = QPushButton("降落 (L)")
         self.land_btn.clicked.connect(self._tello.land)
+
+        # 與控制列的「停止影像」語意分開：那個只關串流，這個才真的斷開飛機
+        self.disconnect_btn = QPushButton("中斷連線")
+        self.disconnect_btn.setToolTip(
+            "斷開與 Tello 的連線。仍在飛行中會先詢問是否降落。\n"
+            "只想關畫面請用控制列的「停止影像」。")
+        self.disconnect_btn.clicked.connect(self._on_tello_disconnect)
+
         self.emergency_btn = QPushButton("緊急停止")
         self.emergency_btn.setStyleSheet("color:#b00;font-weight:bold;")
         self.emergency_btn.clicked.connect(self._on_emergency)
@@ -198,9 +212,9 @@ class MainWindow(QMainWindow):
         self.tello_state.setStyleSheet("color:#888;")
 
         row1 = QHBoxLayout()
-        row1.addWidget(self.connect_btn)
         row1.addWidget(self.takeoff_btn)
         row1.addWidget(self.land_btn)
+        row1.addWidget(self.disconnect_btn)
         row1.addWidget(self.emergency_btn)
         row1.addSpacing(12)
         row1.addWidget(QLabel("速度:"))
@@ -304,21 +318,23 @@ class MainWindow(QMainWindow):
         if self.flight_panel is None:
             return
         conn = self._tello.is_connected
-        self.connect_btn.setText("已連線" if conn else "連線")
-        self.connect_btn.setEnabled(not conn)
-        self.takeoff_btn.setEnabled(conn and not self._tello.is_flying)
+        # 起飛永遠可按：沒連線的話它會自己先連。這正是「起飛就代表連線並有影像」。
+        self.takeoff_btn.setEnabled(not self._tello.is_flying)
         self.land_btn.setEnabled(conn and self._tello.is_flying)
+        self.disconnect_btn.setEnabled(conn)
         self.emergency_btn.setEnabled(conn)
 
-    def _on_tello_connect(self) -> None:
+    def _ensure_tello_connected(self) -> bool:
+        """確保已連上 Tello。回傳是否成功。"""
+        if self._tello.is_connected:
+            return True
         from PySide6.QtWidgets import QApplication
 
-        self.connect_btn.setEnabled(False)
-        self.connect_btn.setText("連線中…")
         QApplication.setOverrideCursor(Qt.WaitCursor)
         QApplication.processEvents()
         try:
             self._tello.open_connection()
+            return True
         except Exception as exc:
             QMessageBox.warning(
                 self, "Tello 連線失敗",
@@ -326,9 +342,48 @@ class MainWindow(QMainWindow):
                 "請確認：\n"
                 "• 電腦已連上 Tello 的 Wi-Fi\n"
                 "• 沒有其他程式正在占用 UDP 8889")
+            return False
         finally:
             QApplication.restoreOverrideCursor()
             self._update_flight_buttons()
+
+    def _on_takeoff(self) -> None:
+        """起飛＝連線 + 有影像 + takeoff。
+
+        飛手按下起飛時，理應已經看得到畫面——不然是盲飛。所以這裡會把前置
+        條件補齊：沒連線就先連，沒開畫面就先開。
+        """
+        if not self._ensure_tello_connected():
+            return
+
+        if self._thread is None:
+            # 還沒開影像。起飛一律用「只預覽」開，不用下拉選的辨識——
+            # 辨識模式畫面只有 0.3 fps，那個速度沒辦法操控無人機。
+            self._on_start(preview_only=True)
+            if self._preview_selected() is False:
+                self.status.setText(
+                    "起飛：已用「只預覽」開啟畫面（辨識模式畫面太慢，不適合操控）")
+
+        self._tello.takeoff()
+
+    def _on_tello_disconnect(self) -> None:
+        """中斷與 Tello 的連線。與「停止影像」不同，這個會真的斷開飛機。"""
+        if not self._tello.is_connected:
+            return
+        if self._tello.is_flying:
+            answer = QMessageBox.question(
+                self, "Tello 仍在飛行中",
+                "要先降落再中斷連線嗎？\n\n"
+                "「Yes」降落後中斷　「No」保持懸停並中斷　「Cancel」取消",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes)
+            if answer == QMessageBox.Cancel:
+                return
+            if answer == QMessageBox.Yes:
+                self._tello.land()
+        self._tello.close_connection()
+        self._update_flight_buttons()
+        self.tello_state.setText("未連線")
 
     def _on_speed(self, value: int) -> None:
         self._tello.speed = value
@@ -460,13 +515,17 @@ class MainWindow(QMainWindow):
 
     # -- 開始／停止 -------------------------------------------------------
 
-    def _on_preview(self) -> None:
-        """只開攝影機，不跑辨識。"""
-        self._on_start(preview_only=True)
+    def _preview_selected(self) -> bool:
+        """下拉選單目前是不是「只預覽」。圖片模式一律跑辨識。"""
+        if self.mode == MODE_IMAGE:
+            return False
+        return bool(self.run_mode_box.currentData())
 
-    def _on_start(self, checked=False, preview_only: bool = False) -> None:
+    def _on_start(self, checked=False, preview_only=None) -> None:
         if self._thread is not None:
             return
+        if preview_only is None:
+            preview_only = self._preview_selected()
         try:
             backend = self._make_backend()
         except Exception as exc:
@@ -497,7 +556,7 @@ class MainWindow(QMainWindow):
 
         self._last_result = None
         self.start_btn.setEnabled(False)
-        self.preview_btn.setEnabled(False)
+        self.run_mode_box.setEnabled(False)
         self.stop_btn.setEnabled(True)
         # 第一格處理完才啟用；在那之前沒有畫面可以拍
         self.snapshot_btn.setEnabled(False)
@@ -527,7 +586,7 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._engine = None
         self.start_btn.setEnabled(True)
-        self.preview_btn.setEnabled(True)
+        self.run_mode_box.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.stop_btn.setText("停止")
         self.snapshot_btn.setEnabled(False)   # 停止後沒有即時畫面可拍

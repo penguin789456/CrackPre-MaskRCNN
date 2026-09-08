@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from . import config
@@ -34,6 +35,18 @@ def _demo_frames() -> list:
     return frames
 
 
+def _select_run_mode(win, preview: bool) -> None:
+    """在行為下拉裡明確選「只預覽」或「開始辨識」。
+
+    測試不該依賴下拉的預設順序——預設值改了，測試會靜默地測錯東西。
+    """
+    for i in range(win.run_mode_box.count()):
+        if bool(win.run_mode_box.itemData(i)) is preview:
+            win.run_mode_box.setCurrentIndex(i)
+            return
+    raise AssertionError(f"行為下拉找不到 preview={preview} 的項目")
+
+
 def _selftest() -> int:
     """無介面煙霧測試：確認視窗建得起來、兩種模式都能開、偵測跑得動。"""
     import os
@@ -47,10 +60,17 @@ def _selftest() -> int:
         print("selftest FAIL: 找不到示範影像")
         return 2
 
-    # 模式對話框
+    # 模式對話框：清單要有兩種模式，且選取後回傳正確的值
     dlg = ModeDialog()
-    assert dlg.mode is None
-    dlg._choose(MODE_IMAGE)
+    if dlg.list.count() != 2:
+        print(f"selftest FAIL: 模式清單有 {dlg.list.count()} 項，應為 2")
+        return 3
+    rows = {dlg.list.item(i).data(Qt.UserRole): i for i in range(dlg.list.count())}
+    if set(rows) != {MODE_IMAGE, MODE_CONTINUOUS}:
+        print(f"selftest FAIL: 模式清單內容不對 {set(rows)}")
+        return 3
+    dlg.list.setCurrentRow(rows[MODE_IMAGE])
+    dlg._accept()
     if dlg.mode != MODE_IMAGE:
         print("selftest FAIL: 模式對話框沒有回傳選擇")
         return 3
@@ -65,6 +85,7 @@ def _selftest() -> int:
         return 4
     win.source_box.setCurrentIndex(demo_idx[0])
     win.threshold.setValue(1)          # 門檻壓低，確保會產生命中
+    _select_run_mode(win, preview=False)   # 明確選辨識，不要依賴下拉的預設值
     win._on_start()
 
     t0 = time.time()
@@ -137,9 +158,10 @@ def _selftest_preview(app, frames):
         return True, 0.0
     win.source_box.setCurrentIndex(demo_idx[0])
 
-    win._on_preview()
-    if win.preview_btn.isEnabled() or win.start_btn.isEnabled():
-        problems.append("預覽中「只預覽」與「開始辨識」都該反灰")
+    _select_run_mode(win, preview=True)
+    win._on_start()
+    if win.run_mode_box.isEnabled() or win.start_btn.isEnabled():
+        problems.append("執行中「行為下拉」與「連線」都該反灰")
 
     window_s = 2.0
     t0 = time.time()
@@ -165,16 +187,16 @@ def _selftest_preview(app, frames):
         if win._thread is None:
             break
         time.sleep(0.02)
-    if not win.preview_btn.isEnabled() or not win.start_btn.isEnabled():
-        problems.append("停止後兩個按鈕都該恢復")
+    if not win.run_mode_box.isEnabled() or not win.start_btn.isEnabled():
+        problems.append("停止後下拉與連線鈕都該恢復")
     win.close()
 
     # 圖片模式不該有「只預覽」
     win2 = MainWindow(mode=MODE_IMAGE, demo_frames=frames)
     win2.show()
     app.processEvents()
-    if win2.preview_btn.isVisible():
-        problems.append("圖片模式不該顯示「只預覽」")
+    if win2.run_mode_box.isVisible():
+        problems.append("圖片模式不該顯示行為下拉")
     win2.close()
 
     for p in problems:
@@ -201,6 +223,7 @@ def _selftest_snapshot(app, frames) -> bool:
     win.source_box.setCurrentIndex(demo_idx[0])
     # 門檻設到最高：自動存檔不會觸發，命中清單裡出現的只可能是手動拍的
     win.threshold.setValue(100)
+    _select_run_mode(win, preview=False)   # 辨識模式：P 走「已分析、立即存」那條
     if win.snapshot_btn.isEnabled():
         problems.append("尚未開始時「拍一張」不該可按")
     win._on_start()
@@ -283,6 +306,22 @@ def _selftest_flight(app, frames) -> bool:
     if RC_INTERVAL_MS < 50:
         problems.append(f"rc 間隔 {RC_INTERVAL_MS}ms 過快（應 >= 50ms）")
 
+    # 面板不該再有「連線」鈕——控制列的「連線」已經包含建立 Tello 連線
+    if hasattr(win, "connect_btn"):
+        problems.append("飛行面板不該再有獨立的「連線」鈕")
+    if not hasattr(win, "disconnect_btn"):
+        problems.append("飛行面板缺少「中斷連線」")
+    # 起飛＝連線＋影像，所以未連線時它也要可按（按下去會自己先連）
+    if not win.takeoff_btn.isEnabled():
+        problems.append("未連線時「起飛」也該可按（它會自己先連線）")
+    if win.disconnect_btn.isEnabled():
+        problems.append("未連線時「中斷連線」不該可按")
+    # 兩種停止的標示要能分辨
+    if "影像" not in win.stop_btn.text():
+        problems.append(f"停止鈕沒有標明是影像：{win.stop_btn.text()}")
+    if "中斷" not in win.disconnect_btn.text():
+        problems.append(f"中斷鈕標示不清：{win.disconnect_btn.text()}")
+
     # 按鍵 -> 速度對應（用假的 tello，不連線）
     ctl = TelloController()
     ctl._tello = object()            # 只是要讓 is_connected 為真
@@ -318,12 +357,21 @@ def main() -> int:
 
     app = QApplication(sys.argv)
 
-    # 依你的要求：開啟時先問要用哪種方式
-    mode = ModeDialog.ask()
+    # 先把整個 GUI 建好（含載入示範影像），再跳 modal 讓使用者進入系統。
+    # 這樣選完模式視窗立刻就在，不會出現「選完之後畫面還要再等一下」的空窗。
+    frames = _demo_frames()
+    holder = MainWindow(mode=MODE_CONTINUOUS, demo_frames=frames)
+
+    mode = ModeDialog.ask(holder)
     if mode is None:
+        holder.close()
         return 0
 
-    win = MainWindow(mode=mode, demo_frames=_demo_frames())
+    # 兩種模式的控制列組成不同，所以選定後才決定要用哪個視窗
+    win = holder if mode == MODE_CONTINUOUS else \
+        MainWindow(mode=mode, demo_frames=frames)
+    if win is not holder:
+        holder.close()
     win.show()
 
     missing = config.missing_required()

@@ -1,4 +1,7 @@
-"""開啟時詢問要用哪種模式。
+"""進入系統時選擇工作模式。
+
+用清單而不是大按鈕：清單可以把每個模式的說明並排看完再決定，
+也方便之後增加模式而不用重排版面。
 
 兩種模式在行為上有實質差異，不只是換個來源：
 
@@ -6,17 +9,28 @@
   連續模式  即時串流，處理不完的舊影格會被丟掉，永遠處理最新畫面。
             適合現場巡檢——你要知道「現在」牆上有沒有裂縫，不是三十秒前。
 
-所以這個選擇放在啟動時問，而不是做成一個容易誤按的開關。
+所以這個選擇放在進入系統時問，而不是做成一個容易誤按的開關。
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QLabel, QPushButton, QVBoxLayout,
+    QDialog, QDialogButtonBox, QLabel, QListWidget, QListWidgetItem,
+    QVBoxLayout,
 )
 
 MODE_IMAGE = "image"
 MODE_CONTINUOUS = "continuous"
+
+MODES = [
+    (MODE_CONTINUOUS, "🎥  連續模式",
+     "接 Tello、RTSP 串流或本機影片，持續偵測。\n"
+     "處理不完的舊畫面會被丟掉，永遠分析最新的一格——延遲不會累積。\n"
+     "可再選「只預覽」（畫面流暢、不跑模型，飛行用）或「開始辨識」。"),
+    (MODE_IMAGE, "📁  圖片模式",
+     "選擇圖片檔或資料夾，逐張分析。\n"
+     "每一張都會處理，不會略過。適合事後檢視已拍好的照片。"),
+]
 
 
 class ModeDialog(QDialog):
@@ -24,55 +38,45 @@ class ModeDialog(QDialog):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("CrackPre — 選擇模式")
+        self.setWindowTitle("CrackPre — 進入系統")
         self.setModal(True)
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(520)
         self._mode = None
 
         title = QLabel("要用哪種方式進行裂縫偵測？")
         title.setStyleSheet("font-size:15px;font-weight:bold;")
 
-        self.image_btn = QPushButton("📁  圖片模式")
-        self.image_btn.setMinimumHeight(58)
-        self.image_btn.setToolTip("挑選既有的圖片檔或整個資料夾，逐張分析")
-        self.image_btn.clicked.connect(lambda: self._choose(MODE_IMAGE))
+        self.list = QListWidget()
+        self.list.setSpacing(2)
+        for key, label, desc in MODES:
+            item = QListWidgetItem(f"{label}\n{desc}")
+            item.setData(Qt.UserRole, key)
+            self.list.addItem(item)
+        self.list.setCurrentRow(0)
+        # 雙擊直接進入，不用再按確定
+        self.list.itemDoubleClicked.connect(lambda _: self._accept())
 
-        image_desc = QLabel(
-            "選擇圖片檔或資料夾，逐張分析。\n"
-            "每一張都會處理，不會略過。適合事後檢視已拍好的照片。")
-        image_desc.setStyleSheet("color:#888;")
-        image_desc.setWordWrap(True)
-
-        self.cont_btn = QPushButton("🎥  連續模式")
-        self.cont_btn.setMinimumHeight(58)
-        self.cont_btn.setToolTip("接無人機或 RTSP 串流，持續偵測最新畫面")
-        self.cont_btn.clicked.connect(lambda: self._choose(MODE_CONTINUOUS))
-
-        cont_desc = QLabel(
-            "接 Tello、RTSP 串流或本機影片，持續偵測。\n"
-            "處理不完的舊畫面會被丟掉，永遠分析最新的一格——延遲不會累積。")
-        cont_desc.setStyleSheet("color:#888;")
-        cont_desc.setWordWrap(True)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
-        buttons.rejected.connect(self.reject)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.button(QDialogButtonBox.Ok).setText("進入系統")
+        self.buttons.accepted.connect(self._accept)
+        self.buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout()
         layout.addWidget(title)
-        layout.addSpacing(10)
-        layout.addWidget(self.image_btn)
-        layout.addWidget(image_desc)
-        layout.addSpacing(14)
-        layout.addWidget(self.cont_btn)
-        layout.addWidget(cont_desc)
-        layout.addSpacing(10)
-        layout.addWidget(buttons)
+        layout.addSpacing(8)
+        layout.addWidget(self.list, 1)
+        layout.addSpacing(6)
+        layout.addWidget(self.buttons)
         self.setLayout(layout)
 
-        self.image_btn.setFocus()
+        self.list.setFocus()
 
-    def _choose(self, mode: str) -> None:
-        self._mode = mode
+    def _accept(self) -> None:
+        item = self.list.currentItem()
+        if item is None:
+            return
+        self._mode = item.data(Qt.UserRole)
         self.accept()
 
     @property
