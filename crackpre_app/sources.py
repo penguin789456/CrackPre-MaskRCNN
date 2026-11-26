@@ -245,15 +245,13 @@ class RtspBackend(CaptureBackend):
 
     @staticmethod
     def gstreamer_available() -> bool:
-        try:
-            import gi  # noqa: F401
+        # 要看的是 OpenCV 編譯時有沒有開 GStreamer，不是 PyGObject 在不在：
+        # pip 的 opencv-python 一律沒開，裝了 gi 也用不了 CAP_GSTREAMER。
+        import re
 
-            gi.require_version("Gst", "1.0")
-            from gi.repository import Gst  # noqa: F401
+        import cv2
 
-            return True
-        except Exception:
-            return False
+        return bool(re.search(r"GStreamer:\s*YES", cv2.getBuildInformation()))
 
     def start(self) -> None:
         import cv2
@@ -262,6 +260,7 @@ class RtspBackend(CaptureBackend):
             "OPENCV_FFMPEG_CAPTURE_OPTIONS",
             "rtsp_transport;tcp|buffer_size;102400|max_delay;100000|fflags;nobuffer",
         )
+        cap = None
         if self.prefer_gstreamer and self.gstreamer_available():
             pipeline = (
                 f"rtspsrc location={self.url} latency=10 protocols=tcp ! "
@@ -269,7 +268,12 @@ class RtspBackend(CaptureBackend):
                 "video/x-raw,format=BGR ! appsink drop=true max-buffers=1"
             )
             cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-        else:
+            if not cap.isOpened():
+                # 例如來源是 H.264 而不是 H.265，或缺 plugin：退回 FFmpeg。
+                print("[rtsp] GStreamer pipeline 開不起來，改用 FFmpeg")
+                cap.release()
+                cap = None
+        if cap is None:
             cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
         if not cap.isOpened():
             raise RuntimeError(f"無法連上 RTSP 來源: {self.url}")
